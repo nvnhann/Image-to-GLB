@@ -7,6 +7,7 @@ sys.path.insert(0, ".")
 sys.path.insert(0, "./hy3dshape")
 sys.path.insert(0, "./hy3dpaint")
 
+import numpy as np
 import torch
 from PIL import Image
 from hy3dshape.rembg import BackgroundRemover
@@ -54,6 +55,26 @@ mesh = shape(
     octree_resolution=args.octree,
     generator=torch.manual_seed(args.seed),
 )[0]
+
+
+def remove_ground_slab(mesh):
+    """Model đôi khi sinh thêm tấm sàn phẳng phủ cả đáy khối không gian, dính vào chân nhân vật.
+    Nhận diện: lớp đáy (3% chiều cao) rộng hơn hẳn phần thân phía trên -> xoá các mặt nằm trọn
+    trong lớp đó rồi giữ lại thành phần liên thông lớn nhất."""
+    v = mesh.vertices
+    lo, height = v[:, 1].min(), np.ptp(v[:, 1])
+    bottom = v[:, 1] < lo + 0.03 * height
+    above = v[~bottom][:, [0, 2]]
+    if not bottom.any() or np.ptp(v[bottom][:, [0, 2]], axis=0).max() < 1.5 * np.ptp(above, axis=0).max():
+        return mesh
+    mesh.update_faces(~bottom[mesh.faces].all(axis=1))
+    mesh.remove_unreferenced_vertices()
+    mesh = max(mesh.split(only_watertight=False), key=lambda m: len(m.faces))
+    print(f"đã xoá tấm sàn sinh nhầm, còn {len(mesh.faces)} mặt")
+    return mesh
+
+
+mesh = remove_ground_slab(mesh)
 shape_path = os.path.join(args.outdir, "shape.glb")
 mesh.export(shape_path)
 print("shape:", shape_path)

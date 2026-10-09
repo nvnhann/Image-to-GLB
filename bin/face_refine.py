@@ -102,7 +102,7 @@ fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
 print(f"khuôn mặt trong ảnh gốc: x={fx} y={fy} w={fw} h={fh}")
 mask = np.zeros(gray.shape, np.float32)
 center = (int(fx + fw / 2), int(fy + fh * 0.52))
-axes = (int(fw * 0.62 * args.grow), int(fh * 0.78 * args.grow))
+axes = (int(fw * 0.72 * args.grow), int(fh * 0.80 * args.grow))
 cv2.ellipse(mask, center, axes, 0, 0, 360, 1.0, -1)
 mask = cv2.GaussianBlur(mask, (0, 0), fw * 0.12) * src[..., 3] * args.strength
 mask_w = cv2.warpAffine(mask, M, (RES, RES), flags=cv2.INTER_LINEAR)
@@ -115,19 +115,20 @@ mask_w *= cv2.GaussianBlur(near.astype(np.float32), (0, 0), 3)
 
 # 3. Chiếu (RGB + mặt nạ) vào UV và trộn với texture gốc
 proj, cos_map, _ = render.back_project(np.dstack([warped[..., :3], mask_w]), 0, 0)
-facing = torch.clamp((cos_map - 0.35) / 0.35, 0, 1)  # bỏ vùng nghiêng (má bên, tai) để tránh vệt kéo dài
+# Giảm dần ở vùng nghiêng (má bên, tai) để tránh vệt kéo dài, nhưng không giảm quá sớm:
+# nếu không, mắt/miệng do Hunyuan tự vẽ lộ ra ở rìa và thành mắt đúp khi nhìn góc 3/4
+facing = torch.clamp((cos_map - 0.1) / 0.25, 0, 1)
 w = torch.clamp(proj[..., 3:4], 0, 1) * facing
 new_tex = tex * (1 - w) + proj[..., :3] * w
 cv2.imwrite(tex_path, (new_tex.clamp(0, 1).cpu().numpy() * 255).astype(np.uint8)[..., ::-1])
 print(f"đã thay {int((w > 0.01).sum())} texel")
 
-# 4. Ảnh so sánh vùng mặt trước/sau (góc chính diện) + xuất lại GLB
-before = render_view(tex)[0]
-after = render_view(new_tex)[0]
+# 4. Ảnh so sánh vùng mặt: trước/sau ở góc chính diện, sau ở góc ±35°, ảnh gốc + xuất lại GLB
 x0, y0, x1, y1 = cv2.transform(np.float32([[[fx - fw, fy - fh], [fx + 2 * fw, fy + 2 * fh]]]), M)[0].astype(int).ravel()
 x0, y0 = max(x0, 0), max(y0, 0)
 crop = lambda t: (t[y0:y1, x0:x1].cpu().numpy() * 255).astype(np.uint8)
-Image.fromarray(np.hstack([crop(before), crop(after), (warped[y0:y1, x0:x1, :3] * 255).astype(np.uint8)])).save(
+views = [render_view(tex)[0]] + [render_view(new_tex, 0, a)[0] for a in (0, 35, -35)]
+Image.fromarray(np.hstack([crop(v) for v in views] + [(warped[y0:y1, x0:x1, :3] * 255).astype(np.uint8)])).save(
     os.path.join(d, "face_debug.png")
 )
 convert_obj_to_glb(obj_path, obj_path.replace(".obj", ".glb"))

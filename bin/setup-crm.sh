@@ -15,11 +15,11 @@ command -v uv >/dev/null || pip install -q uv
 PY="$ROOT/.venv/bin/python"
 PIP="uv pip install --python $PY"
 
-# 3. PyTorch cu118 (chạy được trên T4 / driver mới)
-$PIP torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
+# 3. PyTorch cu130 (khớp nvcc 13.0 của máy, cần để biên dịch nvdiffrast; T4 vẫn được hỗ trợ)
+$PIP torch==2.9.1 torchvision==0.24.1 --index-url https://download.pytorch.org/whl/cu130
 
 # 4. Thư viện của CRM
-$PIP "numpy<2" setuptools wheel ninja
+$PIP "numpy<2" "setuptools<81" wheel ninja
 $PIP -r CRM/requirements.txt
 
 # 5. nvdiffrast (biên dịch CUDA khi chạy lần đầu)

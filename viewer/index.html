@@ -1,0 +1,209 @@
+<!doctype html>
+<title>GLB Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+  /* Layout: canvas full màn hình, thanh công cụ nổi ở trên, kéo-thả file .glb vào bất kỳ đâu */
+  :root {
+    --bg: #15171c;
+    --panel: rgba(30, 33, 41, .86);
+    --line: #343946;
+    --fg: #e6e8ee;
+    --muted: #8e95a6;
+    --accent: #7fb2ff;
+    --font: "IBM Plex Sans", system-ui, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.4 var(--font); overflow: hidden; }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .bar {
+    position: fixed; left: 16px; right: 16px; top: calc(12px + env(safe-area-inset-top, 0px));
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+    padding: 8px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    backdrop-filter: blur(8px);
+  }
+  .name { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stats { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  button, .file, select {
+    font: inherit; font-size: 13px; color: var(--fg); background: transparent; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+  }
+  button:hover, .file:hover { border-color: var(--muted); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible, .file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .hint {
+    position: fixed; left: 16px; right: 16px; bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    text-align: center; color: var(--muted); font-size: 12px; pointer-events: none;
+  }
+  .msg { position: fixed; inset: 0; display: grid; place-items: center; color: var(--muted); pointer-events: none; padding-inline: 16px; text-align: center; }
+  body.drag #stage { outline: 2px dashed var(--accent); outline-offset: -12px; }
+</style>
+
+<div id="stage"></div>
+<div class="bar">
+  <select id="model" aria-label="Chọn model">
+    <option value="../out/hunyuan-v2/textured.glb">Hunyuan3D-2.1 (v2)</option>
+    <option value="../out/hunyuan/textured.glb">Hunyuan3D-2.1 (v1)</option>
+    <option value="../out/output3d.glb">CRM</option>
+  </select>
+  <span class="name" id="name"></span>
+  <span class="stats" id="stats"></span>
+  <div class="tools">
+    <button id="rotate" aria-pressed="true">Tự xoay</button>
+    <button id="wire" aria-pressed="false">Wireframe</button>
+    <button id="reset">Đặt lại góc nhìn</button>
+    <label class="file">Mở file .glb<input id="pick" type="file" accept=".glb,.gltf"></label>
+  </div>
+</div>
+<div class="msg" id="msg">Đang tải model…</div>
+<div class="hint">Kéo chuột để xoay · cuộn để zoom · chuột phải để di chuyển · kéo-thả file .glb vào trang</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const $ = (id) => document.getElementById(id);
+
+const stage = $('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171c);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.2));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(2, 4, 3);
+scene.add(sun);
+
+const grid = new THREE.GridHelper(4, 20, 0x3a4050, 0x262a33);
+scene.add(grid);
+
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+$('rotate').setAttribute('aria-pressed', controls.autoRotate);
+
+let model = null;
+let home = null;
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+function show(gltf, name) {
+  if (model) scene.remove(model);
+  model = gltf.scene;
+
+  // Căn giữa model, đặt đáy lên mặt lưới, chuẩn hoá chiều cao ~1.6
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3());
+  const s = 1.6 / Math.max(size.x, size.y, size.z);
+  model.scale.setScalar(s);
+  box.setFromObject(model);
+  const c = box.getCenter(new THREE.Vector3());
+  model.position.sub(new THREE.Vector3(c.x, box.min.y, c.z));
+  scene.add(model);
+
+  let verts = 0, faces = 0;
+  model.traverse((o) => {
+    if (!o.isMesh) return;
+    const g = o.geometry;
+    verts += g.attributes.position.count;
+    faces += (g.index ? g.index.count : g.attributes.position.count) / 3;
+  });
+  $('name').textContent = name;
+  $('stats').textContent = `${verts.toLocaleString()} đỉnh · ${faces.toLocaleString()} mặt`;
+  $('msg').hidden = true;
+  applyWire();
+
+  const h = box.getSize(new THREE.Vector3()).y;
+  home = { pos: new THREE.Vector3(0, h * 0.6, 3), target: new THREE.Vector3(0, h * 0.5, 0) };
+  resetView();
+}
+
+function resetView() {
+  if (!home) return;
+  camera.position.copy(home.pos);
+  controls.target.copy(home.target);
+  controls.update();
+}
+
+function applyWire() {
+  const on = $('wire').getAttribute('aria-pressed') === 'true';
+  model?.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach((m) => (m.wireframe = on)); });
+}
+
+const loader = new GLTFLoader();
+function loadBuffer(buf, name) {
+  loader.parse(buf, '', (g) => show(g, name), (e) => fail(e));
+}
+function fail(e) {
+  $('msg').hidden = false;
+  $('msg').textContent = `Không đọc được model: ${e?.message || e}. Hãy chọn file .glb khác.`;
+}
+
+$('rotate').onclick = (e) => {
+  controls.autoRotate = !controls.autoRotate;
+  e.currentTarget.setAttribute('aria-pressed', controls.autoRotate);
+};
+$('wire').onclick = (e) => {
+  const b = e.currentTarget;
+  b.setAttribute('aria-pressed', b.getAttribute('aria-pressed') !== 'true');
+  applyWire();
+};
+$('reset').onclick = resetView;
+$('pick').onchange = async (e) => {
+  const f = e.target.files[0];
+  if (f) loadBuffer(await f.arrayBuffer(), f.name);
+};
+addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('drag'); });
+addEventListener('dragleave', () => document.body.classList.remove('drag'));
+addEventListener('drop', async (e) => {
+  e.preventDefault();
+  document.body.classList.remove('drag');
+  const f = e.dataTransfer.files[0];
+  if (f) loadBuffer(await f.arrayBuffer(), f.name);
+});
+
+// Bản nhúng sẵn model (window.GLB_EMBED[url] = base64) dùng khi không có server; còn lại tải từ out/
+function loadUrl(url) {
+  $('msg').hidden = false;
+  $('msg').textContent = 'Đang tải model…';
+  const name = url.replace(/^.*out\//, '');
+  const b64 = window.GLB_EMBED?.[url];
+  if (b64) return loadBuffer(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer, name);
+  fetch(url)
+    .then((r) => { if (!r.ok) throw new Error(`${url} (HTTP ${r.status})`); return r.arrayBuffer(); })
+    .then((b) => loadBuffer(b, name))
+    .catch(fail);
+}
+$('model').onchange = (e) => loadUrl(e.target.value);
+loadUrl($('model').value);
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
